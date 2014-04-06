@@ -14,7 +14,7 @@ class BaseError(Exception):
 class ObjectInitError(BaseError):
     errcode = 1400
 
-class ObjectNotFound(BaseError):
+class ObjectNotExists(BaseError):
     errcode = 1404
 
 class ObjectPKNotFound(BaseError):
@@ -32,7 +32,7 @@ class URLParameterError(BaseError):
 class TableNotExists(Exception):
     errcode = 2401
 
-class TableNotExistsInDMC(Exception):
+class TableNotExistsInMetaDB(Exception):
     errcode = 2402
 
 class TableNameIsRequried(Exception):

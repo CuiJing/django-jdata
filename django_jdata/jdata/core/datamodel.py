@@ -1,14 +1,15 @@
 #_*_coding:utf-8 _*_
 #!/bin/env python
 
-from django_jdata.jdata.core.dbdata import Data
-from django_jdata.models import DataObject 
-from django_jdata.utils import json
-from django_jdata.exceptions import URLParameterError,ObjectNotFound,ObjectConfigError,ObjectConfigTestError,ObjectInitError
 import time,base64
 import os,imp,urllib2
 
+from django_jdata.utils import json
+from django_jdata.exceptions import URLParameterError,ObjectConfigError,ObjectConfigTestError,ObjectInitError
 
+from django_jdata.jdata.core.dbdata import Data
+
+from django_jdata.jdata.core.dataconfig import get_jdata_config
 
 def QueryDict(path):
     if path.find('?')>0:
@@ -25,7 +26,7 @@ def QueryDict(path):
 
 
 class DataModel(object):
-    def __init__(self,objectname=None,path=None, config = {}):
+    def __init__(self, objectname=None, path=None, config = {}):
         self.objectname=objectname
         if not self.objectname:
             if path:
@@ -35,76 +36,66 @@ class DataModel(object):
             else:
                 raise ObjectInitError('parameter objectname | path | config  is required!')
         if not config:
-            self._get_config()
+            config = get_jdata_config(self.objectname)
         try:
-            self._check_config()
+            self._auto_gen_config(config)
         except Exception as e:
-            raise ObjectConfigError('object `'+str(self.objectname)+'` configuration error:   '+str(e))
-        self._auto_gen_config()
-        self.Data = Data(self.objectname, self.DB, self.FIELDS_ALIAS, self.METADB)
+            raise e
+        #ObjectConfigError('object `'+str(self.objectname)+'` configuration error:   '+str(e))
+        self.Data = Data(objectname = self.objectname, 
+                         fields = self.FIELDS,
+                         fields_alias_d = self.FIELDS_ALIAS_D, 
+                         fields_dispname = self.FIELDS_DISPNAME,
+                         create_sql = self.CREATE_SQL,
+                         nonpk = list(set(self.FIELDS_D.keys()) - set(self.PK)),
+                         table_split_idx = self.TABLE_SPLIT_IDX,
+                         )
 
-
-    def check_new_config(self):
-        testtable = 'jdata_config_test_table'
-
-        try:
-            self.Data.createtable(testtable)
-            self.Data.droptable(testtable)
-            #self.Data.query('drop table '+testtable,iscache=False, tablename = testtable)
-        except Exception as e:
-            raise ObjectConfigTestError('object `%s` configuration test : Create Table Error ! %s' %(self.objectname, str(e)))
-        try:
-            self.Data.createtable(testtable)
-            self.Data.query('select * from '+testtable, iscache=False, tablename = testtable)
-            self.Data.droptable(testtable)
-            #self.Data.query('drop table '+testtable, iscache=False, tablename = testtable)
-        except:
-            raise ObjectConfigTestError('object `'+self.objectname+'` configuration test  error: Replication Lag ? ')
-        
-            
-    def _get_config(self):
-        try:_o = DataObject.objects.get(oname = self.objectname)
-        except:raise ObjectNotFound('object `'+self.objectname+'` not found.')
-        self.obj = json.loads(_o.conf)
     
-    def _check_config(self):
-        self.objectname = self.obj['KEY']
+    def _auto_gen_config(self, config):
+        for (attr, value) in config.items():
+            self.__setattr__(attr, value)
+        
+        self.objectname = self.NAME
+
+        #generate FIELDS_DISPNAME from METADB and FIELDS_DISPNAME
+        #dict for fields
+        self.FIELDS_D = {}
+        #dict for fields_alias
+        self.FIELDS_ALIAS_D = {}
         self.FIELDS_DISPNAME = {}
-        self.DB = self.obj['DB']
-        _s = self.DB['mysql']['table_split_idx']
-        self.DB['mysql']['table_split_idx'] = int(_s)
-        #mysqlconfig = self.DB['mysql']['writerurl']
-        _METADB = self.obj['METADB']
-        self.METADB = []
-        for i in _METADB:
-            self.METADB.append((i['name'],i['lambda'],i['alias']))
-            self.FIELDS_DISPNAME[i['name']] = i['alias']
-        _FIELDS_ALIAS = self.obj['FIELDS_ALIAS']
-        self.FIELDS_ALIAS={}
-        for i in _FIELDS_ALIAS:
-            self.FIELDS_ALIAS[i['name']] = (i['lambda'],i['alias'])
-            self.FIELDS_DISPNAME[i['name']] = i['alias']
-        self.NAME = self.obj['NAME']
+        for i in self.FIELDS:
+            self.FIELDS_D[i['field']] = (i['datatype'], i['comment'])
+            self.FIELDS_DISPNAME[i['field']] = i['comment'] or i['field']
+        for i in self.FIELDS_ALIAS:
+            self.FIELDS_ALIAS_D[i['field_alias']] = (i['expression'], i['comment'])
+            self.FIELDS_DISPNAME[i['field_alias']] = i['comment'] or i['field_alias']
         
-
-    def _auto_gen_config(self):
-        #self.URL_ALIAS = self.obj.get('URL_ALIAS',{'s':'starttime','e':'endtime'})
-        self.SHOW_IN_QUERY = self.obj.get('SHOW_IN_QUERY',False)
-        _ALLOWIPS = self.obj.get('ALLOWIPS',[])
-        self.ALLOWIPS = [i['ip'] for i in _ALLOWIPS]
-
-        #generel METADB_CHART
-        str_fields =  [ i[0] for i in  list(self.METADB) if 'char' in i[1]]
-        str_fields.remove(self.FIELDS_ALIAS['timeline'][0])
-        int_fields = self.FIELDS_ALIAS.keys() + [ i[0] for i in  list(self.METADB) if ('int' in i[1] or 'float' in i[1])]
-        int_fields.remove('timeline') 
-        self.METADB_CHART = {}
+        '''
+        #generate METADB_CHART
+        str_fields =  [ i['field'] 
+                            for i in  self.FIELDS 
+                            if 'char' in i['datatype'].lower()
+                        ]
+        #str_fields.remove(self.FIELDS_ALIAS['timeline'][0])
+        '''
+        int_fields = ([i['field_alias'] 
+                        for i in self.FIELDS_ALIAS] 
+                        + 
+                     [ i['field'] 
+                        for i in self.FIELDS 
+                        if ('int' in i['datatype'].lower() 
+                            or 'float' in i['datatype'].lower()
+                          )
+                     ])
+        '''
+        #int_fields.remove('timeline') 
+        self.CHART_LINE = {}
         for i in str_fields:
-            self.METADB_CHART[i] = {'p':i,'name':(self.FIELDS_DISPNAME.get(i) or i),'pageby':True,'filter':True,'fields':False}
+            self.CHART_LINE[i] = {'p':i,'name':(self.FIELDS_DISPNAME[i]),'pageby':True,'filter':True,'fields':False}
         for i in int_fields:
-            self.METADB_CHART[i] = {'p':i,'name':(self.FIELDS_DISPNAME.get(i) or i),'pageby':False,'filter':False,'fields':True}
-        
-        
+            self.CHART_LINE[i] = {'p':i,'name':(self.FIELDS_DISPNAME[i]),'pageby':False,'filter':False,'fields':True}
+        '''
         
     def get_objectname_by_path(self,path):
         url_q = QueryDict(path)
@@ -257,14 +248,28 @@ class DataModel(object):
 
 
     def _check_query_dict(self, query_dict):
+
+        #check _fields
+        int_fields = ([i['field_alias'] 
+                        for i in self.FIELDS_ALIAS] 
+                        + 
+                     [ i['field'] 
+                        for i in self.FIELDS 
+                        if ('int' in i['datatype'].lower() 
+                            or 'float' in i['datatype'].lower()
+                          )
+                     ])
+        int_fields = list(set(int_fields))
         for i in query_dict['_fields']:
-            keys = self.FIELDS_ALIAS.keys() + self.Data.cols
-            if i not in keys:
-                raise URLParameterError('Unknown field `'+i+'`  , expecting one of: "'+', '.join(keys)+'"')
+            if i not in int_fields:
+                raise URLParameterError('Unknown field `%s`  , expecting one of: "%s"' %(i, ', '.join(int_fields)))
+            
+        # check _filters and _pageby
         for i in query_dict['_filters'] + query_dict['_pageby']:
             i = i.split()[0].split('=')[0]
-            if not (i in self.Data.cols):
-                raise URLParameterError('Unknown field `'+i+'` , expecting one of: "'+', '.join(self.Data.cols)+'"')
+            if not (i in self.FIELDS_D.keys()):
+                raise URLParameterError('Unknown field `%s` , expecting one of: "%s"' %(i, ', '.join(self.FIELDS_D.keys())))
+
 
         # tstep有效性检查
         # 默认5分钟，必须填整数，单位分钟
@@ -275,13 +280,13 @@ class DataModel(object):
         except ValueError:
             raise URLParameterError('The value of parameter `_tstep` must integer')
 
-        split_idx = self.DB['mysql']['table_split_idx']
-        if split_idx <= 8:  # 分表粒度为day month year的，最大tstep是1 day
+
+        if self.TABLE_SPLIT_IDX <= 8:  # 分表粒度为day month year的，最大tstep是1 day
             max_tstep = 60*24
-        elif split_idx == 10:  # 分表粒度为 Hour 的，最大tstep是1 hour
+        elif self.TABLE_SPLIT_IDX == 10:  # 分表粒度为 Hour 的，最大tstep是1 hour
             max_tstep = 60
-        elif split_idx == 12: #分表粒度为 minute的，最大tstep是1 minute
+        elif self.TABLE_SPLIT_IDX == 12: #分表粒度为 minute的，最大tstep是1 minute
             max_tstep = 1;
         if int(tstep) > max_tstep:
-            raise URLParameterError('`_tstep` must less than %s minute ,default is 5(min), current value is %s' %(max_tstep, tstep))
+            raise URLParameterError('`_tstep` must less than %s minute ,default is 5(min), current value is %s' %(max_tstep, self.TABLE_SPLIT_IDX))
 

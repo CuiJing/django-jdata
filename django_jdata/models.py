@@ -11,13 +11,14 @@ class DataObject(models.Model):
     conf = models.TextField(u'数据配置',max_length=200, blank=True, null=True)
     created = models.DateTimeField('创建时间', auto_now_add=True)
     # db
-    table_split_idx = models.IntegerField('分表规则', max_length=10, choices=((6,'月'),(8,'天'),(10,'小时')), default=8 )
-    table_create_sql = models.TextField('建表语句',max_length=1000, default = '''create table dataobject_name (ptime datetime  comment '时间',
+    table_split_idx = models.IntegerField('分表规则', max_length=10, choices=((6,'月'),(8,'天'),(10,'小时'),(12,'分')), default=8 )
+    table_create_sql = models.TextField('建表语句',max_length=1000, default = '''create table dataobject_name (
+ timeline datetime comment '时间[固定字段，必须存在]',
  key1 varchar(30) comment '字符型字段key1', 
-key2 varchar(30) comment '字符型字段key2', 
-v1 int  comment '数值型字段value1', 
-v2 int comment '数值型字段value2',
-primary key  (ptime, key1, key2) 
+ key2 varchar(30) comment '字符型字段key2', 
+ v1 int  comment '数值型字段value1', 
+ v2 int comment '数值型字段value2',
+ primary key  (timeline, key1, key2) 
 )
 ''', help_text = 'PS.请填写完整的建表语句（表名须与数据名相同）')
 
@@ -29,24 +30,25 @@ primary key  (ptime, key1, key2)
         return self.oname
 
     class Meta:
-        verbose_name = '数据对象(DataObject)'
-        verbose_name_plural = '1.[数据对象]'
+        verbose_name = 'Jdata'
+        verbose_name_plural = '1.[Jdata数据]'
 
 
 class MySQLService(models.Model):
     mname = models.CharField('名字',max_length=100)
     writer = models.CharField('写库',max_length=100)
     reader = models.CharField('读库',max_length=100)
-    weight = models.IntegerField('权重',max_length=10)
-    servicemode = models.CharField('模式', max_length=10)
+    load = models.IntegerField('负载',max_length=10,default = 1, help_text='越小负载越低；如果配置按Load分配，那么新数据优先存储在负载低的节点')
+    weight = models.IntegerField('权重',max_length=10,default=100)
+    servicemode = models.CharField('模式', max_length=10,choices=(('RW','读写'),('RO','只读'),), default='RW')
     created = models.DateTimeField('创建时间', auto_now_add=True)
 
     def __unicode__(self):
         return self.mname
 
     class Meta:
-        verbose_name = 'MySQL服务'
-        verbose_name_plural = '2.[MySQL服务]'
+        verbose_name = 'MySQL数据库'
+        verbose_name_plural = '2.[MySQL数据库]'
 
 class TableLocation(models.Model):
     dataobject = models.ForeignKey(DataObject)
@@ -59,7 +61,7 @@ class TableLocation(models.Model):
 
     class Meta:
         verbose_name = '数据表分布'
-        verbose_name_plural = '3.[数据表分布]'
+        verbose_name_plural = '表分布'
 
 
 class FieldsAlias(models.Model):

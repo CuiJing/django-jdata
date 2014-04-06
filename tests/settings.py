@@ -18,7 +18,7 @@ DEBUG = True
 
 TEMPLATE_DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ['127.0.0.1','localhost']
 
 
 # Application definition
@@ -40,7 +40,7 @@ INSTALLED_APPS = (
 MIDDLEWARE_CLASSES = (
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
-    'django.middleware.csrf.CsrfViewMiddleware',
+    #'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
@@ -109,6 +109,6 @@ DATETIME_FORMAT = 'Y-m-d H:i:s'
 
 
 ## settings for django_jdata
-JDATA_DMC_MASTER_W = 'jdata/jdata@127.0.0.1:3306/jdata'
-JDATA_DMC_MASTER_R = 'jdata/jdata@127.0.0.1:3306/jdata'
-JDATA_LOG_LEVEL = 0   #Error:0,  Info:1,  Debug:2
+JDATA_TEMPDIR = '/tmp/jdata'
+print 'BASE',BASE_DIR
+#TEMPLATE_DIRS = ( BASE_DIR + '/labs/templates/', )

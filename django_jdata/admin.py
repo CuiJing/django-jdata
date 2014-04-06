@@ -35,12 +35,24 @@ class FieldsAliasInline(admin.TabularInline):
 class TableFieldsInline(admin.TabularInline):
     model = TableFields
     extra = 0
-    readonly_fields = ('field_name', 
+    readonly_fields = (
+                    'id',
+                    'field_name', 
                     'field_datatype', 
                     'is_null', 
                     'is_key',
                     'field_default',
                     'field_comment',
+                    )
+class TableLocationInline(admin.TabularInline):
+    model = TableLocation
+    extra = 0
+    max_num = 3
+    readonly_fields = (
+                    'id',
+                    'mysqlservice',
+                    'tname',
+                    'created',
                     )
 
 
@@ -74,7 +86,7 @@ class DataObjectAdmin(admin.ModelAdmin):
         }),
         )
 
-    inlines = [TableFieldsInline, FieldsAliasInline, ]
+    inlines = [FieldsAliasInline, TableFieldsInline, TableLocationInline,]
     form = DataObjectForm
 
     def save_model(self, request, obj, form, change):
@@ -107,6 +119,7 @@ class MySQLServiceAdmin(admin.ModelAdmin):
                     'mname',
                     'writer',
                     'reader',
+                    'load',
                     'weight',
                     'servicemode',
                     'created',
@@ -121,7 +134,6 @@ class MySQLServiceAdmin(admin.ModelAdmin):
 
 admin.site.register(MySQLService, MySQLServiceAdmin)
 
-
 class TableLocationAdmin(admin.ModelAdmin):
     search_fields = ('dataobject', 'tname',)
     list_display = ( 'dataobject', 
@@ -134,5 +146,4 @@ class TableLocationAdmin(admin.ModelAdmin):
                 'tname',
                 )
 
-admin.site.register(TableLocation, TableLocationAdmin)                
-
+#admin.site.register(TableLocation, TableLocationAdmin)                

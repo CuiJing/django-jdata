@@ -1,41 +1,40 @@
 #_*_coding:utf-8 _*_
 import MySQLdb
 from MySQLdb import OperationalError,ProgrammingError,Warning
-import copy,re,sys
+import re,sys
 import time,hashlib,os,traceback
 from threading import Thread,Lock
 from dateutil import rrule
 from dateutil.parser import parse
 
-from django_jdata.jdata.plugins.filter import FilterGroupLimit
+from django_jdata.jdata.plugins.filter import FilterGroupLimit, FilterNoise, FillGroupbyWithTime
 from django_jdata.exceptions import *
-from django_jdata.utils import log,sqlcache, DMC_MASTER_W, DMC_MASTER_R
+from django_jdata.utils import log,sqlcache 
 
+from django_jdata.jdata.core.dataconfig import *
 
 '''
 a class in database layer  for Datamodel
 '''
 
 class Data(object):
-    def __init__(self,objectname, db_conf, fields_alias, meta_db):  #tuple 
+    def __init__(self, **kwargs):
+        '''
         self.objectname = objectname
-        self.dmc = True
-        self.tableprefix = self.objectname
+        self.fields = fields
+        self.fields_alias_d = fields_alias_d
+        self.fields_dispname = fields_dispname
+        self.create_sql = create_sql
+        self.nonpk = nonpk
+        self.table_split_idx = table_split_idx
         '''
-        self.db_conf=db_conf
-        if not self.db_conf['mysql'].get('writerurl',''):
-            self.dmc = True
-            self.tableprefix = self.objectname
-        else:
-            self.dmc = False
-            self.tableprefix = self.db_conf['mysql']['tableprefix']
-        '''
-        self.dmc_master_w = DMC_MASTER_W
-        self.dmc_master_r = DMC_MASTER_R
+        for (k,v) in kwargs.items():
+            self.__setattr__(k, v)
+
+        self.timefield = self.fields[0]['field']
+        #self.nonpk = list(set(self.fields_d.keys()) - set(self.pk))
         self.dmc_balance_by = 'Round-Robin' # 'Load or Round-Robin'
-        self.fields_alias=fields_alias
-        self.meta_db = meta_db
-        self.timefield=self.fields_alias['timeline'][0]
+
         self.multithreadresult = ()
         self.rowsfromdisk = 0
         self.rowsfrommem = 0
@@ -43,98 +42,20 @@ class Data(object):
         self.querys_frommem = 0
         self.querys_fromdisk = 0
         self.multithreadlock=Lock()
-        self._ParseMetaDB()
-
-    def _ParseMetaDB(self):
-        self.pk = []
-        self.cols = []
-        for i in self.meta_db:
-            #remove the spaces more then 1
-            x = ' '.join([j for j in i[0].split(' ') if j])
-            if x == 'primary key':
-                pk_cols = i[1].replace(')','').replace('(','').split(',')
-                pk_cols = [c.strip() for c in pk_cols]
-                allcols = [j[0].strip() for j in self.meta_db]
-                self.pk = [(col,allcols.index(col)) for col in pk_cols]
-            elif x == 'index':
-                pass
-            else:
-                self.cols.append(x)
-        nonpk_cols = list(set(self.cols) - set([i[0] for i in self.pk]))
-        self.nonpk = [(col,self.cols.index(col)) for col in nonpk_cols]
-
-    def query_master(self, sql):
-        if sql.lower().find('select') == 0:
-            c = self._conn(self.dmc_master_r)
-            log('MR: %s' %sql,2)
-        else:
-            c = self._conn(self.dmc_master_w)
-            log('MW: %s' %sql,2)
-        cur = c.cursor()
-        cur.execute(sql)
-        t = cur.fetchall()
-        cur.execute('commit')
-        cur.close()
-        c.close()
-        return t
-            
-       
-    def dmc_find_node(self, readonly, tablename):
-        if not tablename:
-            raise TableNameIsRequried('DMC `%s`must need a tablename ' %self.objectname)
-        sql = 'select c.writer,c.reader from jdata_dmc_tables t,jdata_dmc_cluster c \
-                where t.oname = "%s" and t.tname = "%s" and t.cid = c.cid' %(self.objectname, tablename)
-        rst = self.query_master(sql)
-        if len(rst) == 0:
-            raise TableNotExistsInDMC('%s: Table `%s` not found in DMC' %(self.objectname, tablename))
-        writer,reader = rst[0]
-        if readonly:
-            return reader
-        else:
-            return writer
-    
-    def dmc_roundrobin_next_cid(self):
-        sql = 'select cid from jdata_dmc_tables where oname = "%s" order by created desc limit 1' %self.objectname
-        try:
-            lastcid = self.query_master(sql)[0][0]
-        except IndexError:
-            lastcid = 0
-        sql = 'select cid from jdata_dmc_cluster where cmode = "RW" and cid > %s order by cid limit 1' %lastcid
-        try:
-            nextcid = self.query_master(sql)[0][0]
-        except IndexError:
-            s = 'select cid from jdata_dmc_cluster where cmode = "RW" order by cid limit 1'
-            nextcid = self.query_master(s)[0][0]
-        return nextcid
 
     def dmc_add_newtable(self, tablename):
         if self.dmc_balance_by == 'Load':
-            sql = 'insert into jdata_dmc_tables(oname, tname, cid) \
-            select "%s","%s",cid from jdata_dmc_cluster c \
-            order by c.load limit 1' %(self.objectname, tablename)
-        #elif self.dmc_balance_by  == 'Round-Robin':
+            next_mynode_id = get_next_mynode_load(self.objectname)
         else:
-            sql = 'insert into jdata_dmc_tables(oname, tname, cid) \
-                values("%s","%s",%s)' %(self.objectname, tablename, self.dmc_roundrobin_next_cid())
-        self.query_master(sql)
-       
+            next_mynode_id = get_next_mynode_roundrobin(self.objectname)
+        add_tablelocation(self.objectname, next_mynode_id, tablename)
+
     def dmc_remove_table(self, tablename):
-        sql = 'delete from jdata_dmc_tables where oname ="%s" and tname = "%s"' %(self.objectname, tablename)
-        self.query_master(sql)
-        
+        remove_tablelocation(self.objectname, tablename)
     
     def conn(self, readonly = False, tablename = ''):
-        if self.dmc:
-            mysql_conf = self.dmc_find_node(readonly, tablename)
-            return self._conn(mysql_conf)
-
-        '''
-        if not readonly:
-            mysql_conf = self.db_conf['mysql']['writerurl']
-        else:
-            mysql_conf = self.db_conf['mysql']['readerurl']
+        mysql_conf = get_mynode_by_tablename(self.objectname, tablename, readonly)
         return self._conn(mysql_conf)
-        '''
 
     def _conn(self, mysql_conf_str):
         t = re.search('^(?P<user>([0-9a-zA-Z-_\.]*?))/[\'\"]?(?P<passwd>([\s\S]*?))[\'\"]?@(?P<host>([0-9a-zA-Z\._-]*?)):(?P<port>(\d*?))/(?P<db>([0-9a-zA-Z-_])*?)$',mysql_conf_str)
@@ -152,12 +73,13 @@ class Data(object):
 
     def queryexecute(self,sql, tablename = ''):
         if sql.lower().find('select') == 0:
-            db = self.conn(readonly = True, tablename = tablename)
+            conn = self.conn(readonly = True, tablename = tablename)
             log('R: %s' %sql, 1)
         else:
-            db = self.conn(readonly = False, tablename = tablename )
+            conn = self.conn(readonly = False, tablename = tablename )
             log('W: %s' %sql, 1)
-        c=db.cursor()
+        c = conn.cursor()
+        c.execute('set default_storage_engine = "myisam"')
         rows_examined = 0
         try:
             try:
@@ -179,7 +101,7 @@ class Data(object):
                     raise e
                 
             if sql.lower().find('load ') == 0:
-                d = db.info()
+                d = conn.info()
                 if d:  #'Records: 10  Deleted: 0  Skipped: 0  Warnings: 0'
                     d = dict([i.split(':') for i in d.split('  ')])
                     d = dict([(i[0], int(i[1])) for i in d.items()])
@@ -194,7 +116,7 @@ class Data(object):
                         rows_examined += int(i[1])
         finally:
             c.close()
-            db.close()
+            conn.close()
         return {'Data':d, 'ProcessedRowsDisk':rows_examined, 'ProcessedRowsMem':0}
 
     def query_append(self, mycursor, tablename ,values):
@@ -230,10 +152,10 @@ class Data(object):
         except TableNotExists,e:
             log('%s %s' %(info, e), 1)
             return {'Data':(),'ProcessedRowsMem':0,'ProcessedRowsDisk':0}
-        except TableNotExistsInDMC,e:
+        except TableNotExistsInMetaDB,e:
             log('%s %s' %(info, e), 1)
             return {'Data':(),'ProcessedRowsMem':0,'ProcessedRowsDisk':0}
-        log('%s:%s ProcessedRowsDisk:%s' %(info, tablename, rst['ProcessedRowsDisk']))
+        log('%s:%s ProcessedRowsDisk:%s' %(info, tablename, rst['ProcessedRowsDisk']), 1)
         mem_rst = {}
         mem_rst['Data'] = rst['Data']
         mem_rst['ProcessedRowsMem'] = rst['ProcessedRowsDisk']
@@ -286,13 +208,13 @@ class Data(object):
 
     
     def gettablename(self,starttime=None):
-        split_idx = self.db_conf['mysql']['table_split_idx']
+        split_idx = self.table_split_idx
         if starttime:
             if len(starttime) < split_idx:
                 raise SpecifiedTimeTooShort('The time `'+starttime+'` is too short(<'+str(split_idx)+') to confirm the Table')
-            return self.tableprefix+starttime[:split_idx]
+            return self.objectname + starttime[:split_idx]
         else:
-            return self.tableprefix+time.strftime('%Y%m%d%H%i',time.localtime())[:split_idx]
+            return self.objectname + time.strftime('%Y%m%d%H%i',time.localtime())[:split_idx]
 
     
     def createtable(self,tablename):
@@ -305,38 +227,35 @@ class Data(object):
         if hastable:
             raise TableAlreadyExists('Table %s already exists!' %tablename)
         
-        crtsql="create table "+tablename+" ("
-        for col in self.meta_db:
-                crtsql=crtsql+col[0]+" "+col[1]+","
-        crtsql=crtsql[:-1]+") engine=MyISAM;"
+        rename_sql = 'alter table %s rename to %s' %(self.objectname, tablename)
         try:
-            self.query(crtsql,iscache=False,tablename = tablename)
-        except TableNotExistsInDMC:
+            self.query(self.create_sql,iscache=False,tablename = tablename)
+        except TableNotExistsInMetaDB:
             self.dmc_add_newtable(tablename)
-            self.query(crtsql,iscache=False,tablename = tablename)
+            self.query(self.create_sql,iscache=False,tablename = tablename)
+        self.query(rename_sql,iscache=False,tablename = tablename)
 
 
     def droptable(self, tablename):
         dropsql = 'drop table '+tablename
         self.query(dropsql,iscache=False,tablename = tablename)
-        if self.dmc:
-            self.dmc_remove_table(tablename)
+        self.dmc_remove_table(tablename)
 
 
-    def loadfile2db(self,file,tablename,fields_terminated=" ",load_mode = ''):
+    def loadfile2db(self,fname,tablename,fields_terminated=" ",load_mode = ''):
         """
         load_mode : append | replace | igonre(default)
         """
+        try:
+            self.createtable(tablename)
+        except TableAlreadyExists as e:
+            pass
         if load_mode == 'append':
-            try:
-                self.createtable(tablename)
-            except:
-                pass
-                # Load File into MySQL should be one by one
-                # (忽略此问题)即使表不存在，新建表也不能使用direct方式，因为不能保证此文件中的数据没有duplicate key
-                return self._loadfile2db_one_by_one(file, tablename, fields_terminated)
+            # Load File into MySQL should be one by one
+            # (忽略此问题)即使表不存在，新建表也不能使用direct方式，因为不能保证此文件中的数据没有duplicate key
+            return self._loadfile2db_one_by_one(fname, tablename, fields_terminated)
         # Load File into MySQL by DirectWrite LoadData
-        return self._loadfile2db_direct(file, tablename, fields_terminated, load_mode)
+        return self._loadfile2db_direct(fname, tablename, fields_terminated, load_mode)
 
 
     def _loadfile2db_one_by_one(self, file, tablename, fields_terminated):
@@ -369,23 +288,19 @@ class Data(object):
         return {'Records': rec,  'Added':insert ,  'Updated':update,  'Errors': err} 
             
             
-    def _loadfile2db_direct(self, file, tablename, fields_terminated, load_mode):
+    def _loadfile2db_direct(self, fname, tablename, fields_terminated, load_mode):
         from warnings import filterwarnings
         filterwarnings('ignore', category = Warning)
-        try:
-            self.createtable(tablename)
-        except:
-            #print 'table ',tablename,'exits'
-            pass
         if load_mode == 'append':
             load_mode = ''
-        loadsql='load data local infile "'+file+'" '+load_mode+' into table '+tablename+'  fields terminated by "'+fields_terminated+'";'
+        loadsql = "load data local infile '%s' %s into table %s fields terminated by '%s';" %(fname, load_mode, tablename, fields_terminated)
+        #loadsql='load data local infile "'+fname+'" '+load_mode+' into table '+tablename+'  fields terminated by "'+fields_terminated+'";'
         r = self.query(loadsql,iscache=False, tablename = tablename)
         return r
 
     def latest_timeline(self):
         sql0 = 'select max('+self.timefield+'), \
-        date_format(date_add(concat(max('+self.timefield+'),"00"),interval -1 day),"%Y%m%d%H%i") \
+        date_format(date_add(max('+self.timefield+'),interval -1 day),"%Y%m%d%H%i") \
         from '
         tablename = self.gettablename()
         sql = sql0 + tablename
@@ -406,44 +321,45 @@ class Data(object):
                 step_minute=q_dict['_tstep']
         step_sec = 60*int(step_minute)
         time1=time.time()
-        #time_field='date_format(date_add(concat('+self.timefield+',"00") ,interval -mod(right('+self.timefield+',2),'+str(step_minute)+') minute),"%Y/%m/%d %H:%i")'
-        time_field = 'from_unixtime(floor((unix_timestamp(concat(%s,"00"))+28800)/%s)*%s-28800, "%s")'  %(self.timefield, step_sec, step_sec, "%Y/%m/%d %H:%i")
+
+        #更改self.time_field字段类型为datetime
+        if q_dict.has_key('_linechart'):
+            time_field = 'floor((unix_timestamp(%s)+28800)/%s)*%s-28800'  %(self.timefield, step_sec, step_sec)
+        else:
+            time_field = 'from_unixtime(floor((unix_timestamp(%s)+28800)/%s)*%s-28800, "%s")'  %(self.timefield, step_sec, step_sec, "%Y/%m/%d %H:%i")
+
+        #the timeline field datatype is char
+        #time_field = 'from_unixtime(floor((unix_timestamp(concat(%s,"00"))+28800)/%s)*%s-28800, "%s")'  %(self.timefield, step_sec, step_sec, "%Y/%m/%d %H:%i")
+
         # +-28800 主要是为了去除unixtime不是从0点开始（从1970-01-01 08:00:00开始）的影响
 
         querylist=[]
         display_fields = []
+        datatype_fields = []
         sql_s = 'select '  #select sql
         if str(step_minute) != '0':
             sql_s=sql_s+time_field+', '
             display_fields.append('时间')
+            datatype_fields.append('DATETIME')
         if q_dict.get('_pageby',''):
             for j in q_dict['_pageby']:
-                if j in self.fields_alias.keys():
-                    display_fields.append(self.fields_alias[j][1])
-                    j = self.fields_alias[j][0]
-                else:
-                    try:
-                        fd_name = [o[2] for o in self.meta_db if o[0] == j][0]
-                    except:
-                        fd_name = j
-                    display_fields.append(fd_name)
+                display_fields.append(self.fields_dispname[j])
+                datatype_fields.append('STRING')
+                if self.fields_alias_d.has_key(j):
+                    j = self.fields_alias_d[j][0]  #(expression, comment)
                 sql_s = sql_s + j + ','
         for i in q_dict['_fields']:
-            if i in self.fields_alias.keys():
-                display_fields.append(self.fields_alias[i][1])
-                i = self.fields_alias[i][0].replace('_minutes',str(step_minute))
-                i = i.replace('_tstep', str(step_minute))
-            else:
-                try:
-                    fd_name = [o[2] for o in self.meta_db if o[0] == i][0]
-                except:
-                    fd_name = i
-                display_fields.append(fd_name)
-            #check tstep:如果tstep=0，只允许sum,count(加)，暂不支持减乘除,avg,max,min等
-            if str(step_minute) == '0':
-                for x in ('/', '*', '-', 'avg', 'max', 'min'):
-                    if i.find(x) >= 0:
-                        raise UnsupportedQuery('Field `%s` is not supported with `_tstep=0`' %i)
+            display_fields.append(self.fields_dispname[i])
+            datatype_fields.append('INT')
+            if self.fields_alias_d.has_key(i):
+                i = self.fields_alias_d[i][0]  #(expression, comment)
+                i = i.replace('_tstep',str(step_minute))
+
+                #check tstep:如果tstep=0，只允许sum,count(加)，暂不支持减乘除,avg,max,min等
+                if str(step_minute) == '0':
+                    for x in ('/', '*', '-', 'avg', 'max', 'min'):
+                        if i.find(x) >= 0:
+                            raise UnsupportedQuery('Field `%s` is not supported with `_tstep=0`' %i)
             sql_s=sql_s+i+','
         sql_s = sql_s[:-1]+' from '
         sql_w = ' where '   #where sql
@@ -466,21 +382,23 @@ class Data(object):
 
         if str(step_minute) != '0':
             if q_dict.get('_pageby',''):
-                #sql_g = ' group by '+time_field+','+q_dict['_pageby']
                 sql_g = ' group by '+time_field
                 for j in q_dict['_pageby']:
-                    if j in self.fields_alias.keys():
-                        j = self.fields_alias[j][0]
+                    if self.fields_alias_d.has_key(j):
+                        j = self.fields_alias_d[i][0]
+                    #if j in self.fields_alias.keys():
+                    #    j = self.fields_alias[j][0]
                     sql_g = sql_g + ',' + j
             else:
                 sql_g = ' group by '+time_field
         else:
             if q_dict.get('_pageby',''):
-                #sql_g = ' group by '+q_dict['_pageby']
                 sql_g = ' group by '
                 for j in q_dict['_pageby']:
-                    if j in self.fields_alias.keys():
-                        j = self.fields_alias[j][0]
+                    if self.fields_alias_d.has_key(j):
+                        j = self.fields_alias_d[i][0]
+                    #if j in self.fields_alias.keys():
+                    #    j = self.fields_alias[j][0]
                     sql_g = sql_g + j + ','
                 sql_g = sql_g[:-1]
             else:
@@ -488,10 +406,15 @@ class Data(object):
 
         mythread = []
         debugout = []
-        for i in querylist:
-            sql=sql_s+i[0]+sql_w+self.timefield+' >= '+i[1]+' and '+self.timefield+' <= '+i[2]+sql_g    
-            args=(sql,step_minute,q_dict.get('_pageby',''),q_dict.has_key('_refresh'), i[0])
-            t=Thread(target=self.multithreadquery,args=args)
+        for (tabname, starttime, endtime) in querylist:
+            sql = '%s %s %s %s >= %s and %s <= %s %s ' %(sql_s, tabname, sql_w, \
+                                            self.timefield, starttime, self.timefield, endtime, sql_g)
+            args = (sql, 
+                    step_minute, 
+                    q_dict.get('_pageby',''),
+                    q_dict.has_key('_refresh'),
+                    tabname)
+            t=Thread(target=self.multithreadquery, args=args)
             mythread.append(t)
             debugout.append( dict(zip(('sql','_tstep','_pageby','_refresh','tablename'), args) ))
 
@@ -511,7 +434,7 @@ class Data(object):
 
         log('[Data.rawget] Elapsed:%s QuerysALL:%s FromMem/Disk/NotFound:%s/%s/%s \
 ProcessedRowsDisk:%s ProcessedRowsMem:%s ResultCount:%s %s' %(elapsed, querys, self.querys_frommem, self.querys_fromdisk, self.querys_notfound, self.rowsfromdisk, self.rowsfrommem, rst_cnt, q_dict))
-        rst = {'Data':data, 'Metadata':display_fields, 'Elapsed':str(elapsed)+'s', 'ProcessedRowsDisk':str(self.rowsfromdisk)+' rows', 'ProcessedRowsMem':str(self.rowsfrommem)+' rows', 'ResultCount':str(rst_cnt)+' rows'}
+        rst = {'Data':data, 'DataType':datatype_fields, 'Metadata':display_fields, 'Elapsed':str(elapsed)+'s', 'ProcessedRowsDisk':str(self.rowsfromdisk)+' rows', 'ProcessedRowsMem':str(self.rowsfrommem)+' rows', 'ResultCount':str(rst_cnt)+' rows'}
         self.multithreadresult=()
         self.rowsfromdisk = 0
         self.rowsfrommem = 0
@@ -580,7 +503,11 @@ ProcessedRowsDisk:%s ProcessedRowsMem:%s ResultCount:%s %s' %(elapsed, querys, s
 
         time1 = time.time()
         # 如果没有limit_rows参数，并且满足如下任一条件，则直接返回rawdata
-        if (not q_dict.get('_limit_rows','')) and (len(q_dict['_pageby'])>1 or len(q_dict['_fields'])>1 or str(q_dict.get('_tstep','')) == '0' or q_dict.has_key('_rawdata')):
+        if (not q_dict.get('_limit_rows','')) and (len(q_dict['_pageby'])>1 
+                    or len(q_dict['_fields'])>1 
+                    or str(q_dict.get('_tstep','')) == '0' 
+                    or q_dict.has_key('_rawdata')
+                 ):
             return rst
 
         # 如果有limit_rows参数，则直接按规则过滤
@@ -590,8 +517,8 @@ ProcessedRowsDisk:%s ProcessedRowsMem:%s ResultCount:%s %s' %(elapsed, querys, s
 
         # 如果没有limit_rows参数，同时又都不满足上面几个条件，则会做数据填充和数据清洗
         else:
-            filled = self.datafill(data)
-            new_data = self.dataclean(filled,q_dict.get('_dataclean',5))
+            filled = FillGroupbyWithTime(data)
+            new_data = FilterNoise(filled, q_dict.get('_dataclean',3))
             action = 'Fill&Clean'
 
         rst['Data'] = new_data
@@ -604,79 +531,33 @@ ProcessedRowsDisk:%s ProcessedRowsMem:%s ResultCount:%s %s' %(elapsed, querys, s
         rst['ResultCount'] = str(new_count)+' rows'
         return rst
 
-    def datafill(self, data):
-        pagebys = {}.fromkeys([i[1] for i in data]).keys()
-        l = len(data[0])
-        thistime = data[0][0]
-        thispageby = []
-        adddata = []
-        for i in data+[['0','x']]:
-            if thistime == i[0]:
-                thispageby.append(i[1])
-            else:
-                x = copy.copy(pagebys)
-                for p in thispageby:
-                    x.remove(p)
-                for p in x:
-                    adddata.append(tuple([thistime,p]+[0 for j in range(l-2)]))
-                thispageby = [i[1],]
-                thistime = i[0]
-                
-        newdata = data+adddata
-        newdata.sort()
-        return newdata
-
-        
-
-    def dataclean(self,data,threshold):  #need pageby
-        threshold = int(threshold)
-        max_v = 0
-        max_e = {}
-        noisedata = []
-        newdata = []
-        for i in data:
-            if i[-1] > max_v : max_v = i[-1]
-            if max_e.get(i[1],''):
-                if i[-1] > max_e[i[1]]:
-                    max_e[i[1]] = i[-1]
-            else:
-                max_e[i[1]] = i[-1]
-        if max_v == 0:
-            return data
-        for i in max_e:
-            v = max_e[i] or 0
-            if 100*(float(v)/float(max_v))<threshold:
-                noisedata.append(i)
-        for i in data:
-            if i[1] not in noisedata:
-                newdata.append(i)
-        return newdata
-        
 
     def generate_querylist(self,start,end): #return tablename,starttime,endtime
         querylist=[]
-        split_idx = self.db_conf['mysql']['table_split_idx']
+        split_idx = self.table_split_idx
+        start = start.ljust(14, '0')
+        end = end.ljust(14, '0')
         if start[:split_idx] == end[:split_idx]:
             return [(self.gettablename(start),"'"+start+"'","'"+end+"'")]
         if split_idx == 4:
             seq = rrule.YEARLY
-            postfix_s = '01010000'
-            postfix_e = '12312359'
+            postfix_s = '0101000000'
+            postfix_e = '1231235959'
             fmt = '%Y'
         elif split_idx == 6:
             seq = rrule.MONTHLY
-            postfix_s = '010000'
-            postfix_e = '312359'
+            postfix_s = '01000000'
+            postfix_e = '31235959'
             fmt = '%Y%m'
         elif split_idx == 8:
             seq = rrule.DAILY
-            postfix_s = '0000'
-            postfix_e = '2359'
+            postfix_s = '000000'
+            postfix_e = '235959'
             fmt = '%Y%m%d'
         elif split_idx == 10:
             seq = rrule.HOURLY
-            postfix_s = '00'
-            postfix_e = '59'
+            postfix_s = '0000'
+            postfix_e = '5959'
             fmt = '%Y%m%d%H'
  
         _start = start[:split_idx]

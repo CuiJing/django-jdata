@@ -9,13 +9,15 @@ import datetime
 import sys,time
 import json
 
-project_dir  = settings.BASE_DIR
-DMC_MASTER_W = settings.JDATA_DMC_MASTER_W
-DMC_MASTER_R = settings.JDATA_DMC_MASTER_R
+#project_dir  = settings.BASE_DIR
+try:
+    JDATA_TEMPDIR = settings.JDATA_TEMPDIR
+except:
+    JDATA_TEMPDIR = '/tmp/jdata/'
 
 def json_encode_decimal(obj):
 	if isinstance(obj, decimal.Decimal):
-		return str(obj)
+		return '%s' %obj
 	if isinstance(obj, datetime.datetime):
 		return str(obj)
     
@@ -28,7 +30,11 @@ def return_http_json(rst):
 	return r
 	
 
-def log(s, level = 0):  # 0:INFO  1: DEBUG
-    if level <= settings.JDATA_LOG_LEVEL:
+def log(s, level = 0):   #Error:0,  Info:1,  Debug:2
+    if settings.DEBUG:
+        log_level = 2
+    else:
+        log_level = 0
+    if level <= log_level:
         sys.stdout.write(time.strftime('%Y-%m-%d %H:%M:%S ')+": "+s+'\n')
     

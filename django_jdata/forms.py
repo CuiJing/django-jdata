@@ -18,7 +18,7 @@ class DataObjectForm(forms.ModelForm):
         if oname_from_sql != oname:
             raise forms.ValidationError(u'表名(%s)跟数据名(%s)不符!' %(oname_from_sql, oname))
         
-        drop_sql = 'drop table if exists %s' %oname 
+        drop_sql = 'drop table if exists %s' %oname
         cur = connections['jdata_temp'].cursor()   
         cur.execute(drop_sql)
         try:
