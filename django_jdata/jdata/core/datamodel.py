@@ -41,13 +41,23 @@ class DataModel(object):
             self._auto_gen_config(config)
         except Exception as e:
             raise e
-        #ObjectConfigError('object `'+str(self.objectname)+'` configuration error:   '+str(e))
+
+        #find non pk fields
+        _idx = 0
+        nonpk = []
+        for i in self.FIELDS:
+            if i['field'] not in self.PK:
+                nonpk.append((i['field'], _idx))
+            _idx += 1
+
+        ##
         self.Data = Data(objectname = self.objectname, 
                          fields = self.FIELDS,
                          fields_alias_d = self.FIELDS_ALIAS_D, 
                          fields_dispname = self.FIELDS_DISPNAME,
                          create_sql = self.CREATE_SQL,
-                         nonpk = list(set(self.FIELDS_D.keys()) - set(self.PK)),
+                         #nonpk = list(set(self.FIELDS_D.keys()) - set(self.PK)),
+                         nonpk = nonpk,
                          table_split_idx = self.TABLE_SPLIT_IDX,
                          )
 

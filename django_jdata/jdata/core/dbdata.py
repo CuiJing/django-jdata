@@ -121,7 +121,7 @@ class Data(object):
 
     def query_append(self, mycursor, tablename ,values):
         i_sql = 'insert into ' +tablename+ ' values ("' + '","'.join(values) + '")'
-        u_sql = ','.join( [i[0] + '= '+i[0]+ '+' + values[i[1]]  for i in self.nonpk] )
+        u_sql = ','.join( [field + '= '+ field + '+' + values[idx]  for (field, idx) in self.nonpk] )
         sql = '%s on duplicate key update %s' %(i_sql, u_sql)
         mycursor.execute(sql)
         row = mycursor.rowcount

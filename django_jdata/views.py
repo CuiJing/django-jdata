@@ -140,7 +140,7 @@ def put(request):
         if data_exists_action in('ignore','replace', 'append'):
             tablename = DM.Data.gettablename(timeline)
             if data_exists_action in ('replace', 'append'):
-                if not DM.Data.pk:
+                if not DM.PK:
                     raise ObjectPKNotFound('No PK Found For this Data `%s` ,so you can not use parameter `%s`' %(obj, data_exists_action))
             rst = DM.Data.loadfile2db(tmpfile, tablename, fields_terminated, data_exists_action)
             log('upload: %s %s [%s] %ss %s %s' %(client, obj, data_exists_action, int(time.time()-t1),tmpfile,rst))
